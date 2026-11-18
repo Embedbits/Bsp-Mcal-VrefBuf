@@ -14,7 +14,75 @@ This README is the landing page and the **specification of the interface** (mast
 own README with everything that is specific to the family: the instances of the device, their settings and the status of
 the implementation.
 
-> **Status: design.** No implementation exists yet, the interface below is a proposal. Stories and branches follow.
+> **Status (STM32H7, branch `Dev/STM32H7`): implemented (version 0.1.0).** Port of the STM32H5 module (the same VREFBUF
+> registers and register protocols: RM0433, RM0399, RM0455, RM0468 and RM0477 for STM32H7R / STM32H7S, built with this branch as
+> the Ral family STM32H7RS). The interface below is implemented in `VrefBuf_Port.h` / `VrefBuf_Types.h` as on STM32H5, the
+> registers are accessed only by the private `VrefBuf_Reg.c/h`. The module compiles without warnings for the 22 STM32H7 and the
+> 4 STM32H7R / STM32H7S device lines. Unit tests (Unity + CMock + RegMem, 69 test cases) pass on STM32H723, H743, H755, H7A3,
+> H7B3, H7R3 and H7S7 (the case of the level 1.5 V is ignored on STM32H7R / STM32H7S, the cases of a line without the peripheral
+> on every line). Integration tests: the firmware builds for every STM32H7 and STM32H7R / STM32H7S preset; run on NUCLEO-H723ZG,
+> NUCLEO-H7A3ZI-Q and NUCLEO-H755ZI-Q: the case of the high impedance mode passes, the 8 cases which start the buffer are ignored
+> (the boards have no fixture feature VREFBUF_OUTPUT - the pin VREF+ is connected to VDDA, the buffer output cannot reach its
+> level), the case of a line without the peripheral is ignored. NUCLEO-H7S3L8 not run (board not connected). The buffer cases
+> were not run on a board with a free pin VREF+.
+>
+> Notes of the STM32H7 implementation (the interface above is unchanged, the points below are the STM32H7 specifics and the places
+> where the general text of this README is refined for the hardware):
+> - **Lines.** Every STM32H7 and STM32H7R / STM32H7S line has the VREFBUF (CMSIS definition `VREFBUF`). Every public function keeps
+>   the check of the peripheral (`#if defined(VREFBUF)`): without it the function keeps its signature and returns
+>   `VREFBUF_REQUEST_ERROR`, `VrefBuf_Get_ModuleVersion` returns the version and `VrefBuf_Task` does nothing.
+> - **Modes.** The bits ENVR and HIZ of `VREFBUF_CSR` select the hardware modes. `VREFBUF_MODE_BUFFER` is ENVR = 1, HIZ = 0 (internal
+>   voltage reference mode), `VREFBUF_MODE_HIGH_IMPEDANCE` is ENVR = 0, HIZ = 1 (external voltage reference mode, the pin VREF+ is an
+>   input, reset state). `VREFBUF_MODE_OFF` is ENVR = 0, HIZ = 0: the buffer is off **and the pin VREF+ is pulled down to VSSA**
+>   (reference manual, table of the buffer modes), so the off mode is not "the reference is VDDA" as the general text above says.
+>   The mode shall not be used where VREF+ is connected to VDDA. The hold mode of the hardware (ENVR = 1, HIZ = 1) is not a mode of
+>   the module and the module does not use it; `VrefBuf_Get_Mode` returns `VREFBUF_REQUEST_ERROR` for it.
+> - **Levels.** The field VRS selects on the STM32H7 lines (RM0433, RM0399, RM0455, RM0468) 2.5 V (000, the reset level), 2.048 V
+>   (001), 1.8 V (010) and 1.5 V (011, `VREFBUF_VOLTAGE_1_5V`; the reference manuals state that the ADC and DAC peripherals are not
+>   compatible with this level). STM32H7R / STM32H7S (RM0477, datasheet DS14360) have the levels 2.5 V (000), 2.048 V (001) and
+>   1.8 V (010), `VREFBUF_VOLTAGE_1_5V` does not exist on these lines. The other values of VRS are reserved. The hardware lets the
+>   software write VRS only while the buffer is disabled (ENVR = 0). A change of the level of the running buffer therefore goes
+>   through the high impedance mode (the external capacitor holds the voltage, the pin is never pulled down), then the previous mode
+>   is restored and the ready flag is awaited. The minimum VDDA of every level (normal mode) is given in the datasheet of the line;
+>   below it the buffer is in the degraded mode and follows VDDA.
+> - **Trimming.** `TRIM[5:0]` (codes 0 ... 63, `VREFBUF_TRIMMING_MAX`) holds the factory trimming of the selected level; the hardware
+>   loads it at reset and at every change of VRS, until the first write of TRIM, which stops the loading until the next reset of
+>   the peripheral. `VrefBuf_Init` and `VrefBuf_Deinit` reset the peripheral through the Rcc module, so the factory trimming is
+>   active again after them. The reference manual states that an application trimming procedure shall run through the codes in
+>   ascending order. `VREFBUF_TRIMMING_UNUSED` in the configuration keeps the factory trimming.
+> - **Init and Deinit.** `VrefBuf_Init` checks the whole configuration before any register is written, activates the clock, resets the
+>   peripheral, writes the level, the optional trimming and the mode (in this order, so the buffer starts with the final level
+>   and trimming), waits for the ready flag in the buffer mode and verifies mode, level, trimming and the ready state by read-back;
+>   on a failure the module is deinitialized and an error is returned. `VrefBuf_Deinit` resets the peripheral and disables its clock:
+>   the pin VREF+ is then an input (external voltage reference mode), the reference of the converters is the voltage connected to
+>   it (VDDA on the boards where it is connected). It can be called in any state.
+> - **State and getters.** The state is read from the registers: `VREFBUF_STATE_READY` in the buffer mode with the flag VRR set,
+>   `VREFBUF_STATE_STARTING` in the buffer mode without it (start-up, or the output fell below the requested level), otherwise
+>   `VREFBUF_STATE_OFF`. The getters have no side effects (they never enable a clock) and return `VREFBUF_REQUEST_ERROR` before
+>   `VrefBuf_Init`. A failed change of the mode or the level (ready flag not set within the timeout) returns an error and leaves the
+>   buffer enabled, the state tells `VREFBUF_STATE_STARTING`.
+> - **Start-up timeout.** `vrefBuf_Config_t::StartTimeout` is a count of read-backs of the ready flag (no time base is used); the default is
+>   100000, the start-up time of the buffer is below 1 ms (datasheets DS12110 and DS14360: up to 650 us with a load capacitor of 1.5 uF).
+> - **Interface details derived from the tables of this README.** The code block of the short interface lists only part of the
+>   functions, the table lists also `VrefBuf_Get_Mode`, `VrefBuf_Get_Voltage` and `VrefBuf_Get_Trimming`, which are implemented with
+>   an output pointer like `VrefBuf_Get_State`. The configuration members are `Mode`, `Voltage`, `Trimming` and `StartTimeout`. The
+>   default configuration is the buffer mode at 2.5 V with the factory trimming. `VrefBuf_Task` has no periodic work (the start-up is
+>   awaited inside of the functions).
+> - **Device errata of the STM32H7 lines (bug AB#2305).** "Overshoot on VREFBUF output" (ES0392 Rev 15 2.11.1, ES0445 Rev 6 2.12.1,
+>   ES0478 Rev 12 2.9.1, ES0491 Rev 9 2.12.1): an overshoot might occur on the output when the buffer is enabled while VREF+ has a
+>   residual voltage; the workaround lets VREF+ drop to 1 V under the target level (off mode, discharge through the pull-down
+>   resistor) before the buffer is enabled. The module does not apply it: the time depends on the capacitor and the load of the
+>   board, no register reports it and a blind delay is not allowed. The application waits before `VrefBuf_Init` in the buffer mode,
+>   before `VrefBuf_Set_Mode` to `VREFBUF_MODE_BUFFER`, and changes the level with the buffer off where the overshoot matters
+>   (`VrefBuf_Set_Voltage` of the running buffer enables it again with the capacitor charged to the previous level); the Doxygen of
+>   these functions carries the note. "VREFBUF Hold mode cannot be used" (2.11.2 / 2.12.2 / 2.9.2 / 2.12.2, no workaround): the
+>   module does not use the hold mode. "VREFBUF trimming code not automatically initialized after reset" (ES0392 2.11.3, revision Y
+>   of STM32H742 / H743 / H750 / H753 only): the application passes the factory value stored at the address 0x58000574 (bits 5:0)
+>   as `vrefBuf_Config_t::Trimming`, the module does not read the silicon revision. ES0596 Rev 10 (STM32H7R / STM32H7S) lists no
+>   VREFBUF erratum.
+> - **Packages.** On the packages where VREF+ is bonded to VDDA the buffer is not available and shall be kept disabled; the module
+>   cannot detect the package, the application does not initialize the module there. A board where the pin VREF+ is connected to
+>   VDDA by a bridge needs the bridge open before the buffer mode is used.
 
 ---
 
@@ -64,10 +132,10 @@ master.
 
 | Family | Branch | Buffer | Status |
 |---|---|---|---|
-| STM32H5 | `Dev/STM32H5` | `VREFBUF` on all lines except STM32H503: 2.5 V, 2.048 V, 1.8 V levels, high-impedance mode, ready flag, trimming | planned (first) |
+| STM32H5 | `Dev/STM32H5` | `VREFBUF` on all lines except STM32H503: 2.5 V, 2.048 V, 1.8 V levels, high-impedance mode, ready flag, trimming | implemented (0.1.0) |
 | STM32U5 | `Dev/STM32U5` | `VREFBUF` | planned |
 | STM32G4, STM32L4 | `Dev/STM32G4`, `Dev/STM32L4` | `VREFBUF` (2.5 V, 2.048 V) on the lines that have it | planned |
-| STM32H7 | `Dev/STM32H7` | `VREFBUF` | planned |
+| STM32H7 | `Dev/STM32H7` | `VREFBUF` on every line: 2.5 V, 2.048 V, 1.8 V levels and 1.5 V on the STM32H72x / H73x / H74x / H75x / H7A3 / H7B0 / H7B3 lines (STM32H7R / STM32H7S, Ral family STM32H7RS: 2.5 V, 2.048 V, 1.8 V), high-impedance mode, ready flag, trimming | implemented (0.1.0) |
 | STM32U3 | `Dev/STM32U3` | device dependent | planned |
 | STM32F4, STM32F7 | `Dev/STM32F4`, `Dev/STM32F7` | no reference buffer (the reference is `VREF+`, `VDDA`) - the module is a stub that returns `VREFBUF_REQUEST_ERROR` | planned |
 
@@ -183,8 +251,9 @@ The module follows the common rules of the MCAL layer, so that it behaves like t
   configuration structure, the same request and the same callbacks (error, half transfer, transfer complete).
 - **Flags and states are enums of the module** (`vrefBuf_FunctionState_t`, `vrefBuf_FlagState_t`), the limits and the constants are
   named, there are no magic numbers in the interface.
-- **Unsupported functions stay.** A function without a meaning in a family keeps its signature, suppresses the unused
-  parameters and returns `VREFBUF_REQUEST_ERROR`.
+- **Every function checks the peripheral.** The functions keep their signature on all families; on the line without the
+  peripheral (`VREFBUF` is not defined, STM32H503) a function suppresses the unused parameters and returns
+  `VREFBUF_REQUEST_ERROR` (`VrefBuf_Task` does nothing, `VrefBuf_Get_ModuleVersion` returns the version).
 - **Documentation.** Every function and type has a Doxygen description, the main header has the `\defgroup`.
 
 ---
