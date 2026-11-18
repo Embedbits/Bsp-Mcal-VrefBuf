@@ -32,8 +32,8 @@ the implementation.
 >   input, reset state). `VREFBUF_MODE_OFF` is ENVR = 0, HIZ = 0: the buffer is off **and the pin VREF+ is pulled down to VSSA**
 >   (reference manual, table of the buffer modes), so on STM32H5 the off mode is not "the reference is VDDA" as the general text
 >   above says. The mode shall not be used where VREF+ is connected to VDDA. The hold mode of the hardware (ENVR = 1, HIZ = 1) is not
->   a mode of the module: it is used only internally while the level of the running buffer is changed and `VrefBuf_Get_Mode`
->   returns `VREFBUF_REQUEST_ERROR` for it.
+>   a mode of the module and the module does not use it (the change of the level of the running buffer goes through the high
+>   impedance mode, see Levels); `VrefBuf_Get_Mode` returns `VREFBUF_REQUEST_ERROR` for it.
 > - **Levels.** The field VRS selects 2.5 V (000, the reset level), 2.048 V (001) and 1.8 V (010), other values are reserved. The
 >   hardware lets the software write VRS only while the buffer is disabled (ENVR = 0). A change of the level of the running buffer
 >   therefore goes through the high impedance mode (the external capacitor holds the voltage, the pin is never pulled down), then

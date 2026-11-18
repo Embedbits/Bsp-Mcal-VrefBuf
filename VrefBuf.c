@@ -21,8 +21,8 @@
  *   pin is an input (reset state),
  * - \ref VREFBUF_MODE_OFF (ENVR = 0, HIZ = 0): the buffer is off and the pin VREF+ is pulled
  *   down to VSSA. The mode shall not be used on a board where VREF+ is connected to VDDA.
- * The hold mode of the hardware (ENVR = 1, HIZ = 1) is not a mode of the module, it is used only
- * internally by the change of the voltage level of the running buffer.
+ * The hold mode of the hardware (ENVR = 1, HIZ = 1) is not a mode of the module and the module
+ * does not use it (the change of the voltage level of the running buffer uses the high impedance mode).
  *
  * # Voltage and trimming #
  * The levels 2.5 V, 2.048 V and 1.8 V are selected by the field VRS, which the hardware lets
